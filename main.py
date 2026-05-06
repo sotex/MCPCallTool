@@ -1,5 +1,6 @@
 import asyncio
 import threading
+from datetime import timedelta
 from flask import Flask, render_template, request, jsonify
 from flask_socketio import SocketIO
 from mcp import ClientSession
@@ -31,11 +32,16 @@ async def mcp_service_worker(url, result_event, result_container):
     2. 对 ClientSession 使用 async with 上下文管理，确保初始化和关闭逻辑正确。
     """
     try:
+
+        def message_handler(message):
+            print(f"Received message: {message}")
+
+
         # 1. 建立传输层连接
         async with streamable_http_client(url) as (read, write, get_session_id):
             print(f"get_session_id: {get_session_id()}")
             # 2. 建立会话层连接（使用 async with 确保 session 生命周期管理）
-            async with ClientSession(read, write) as session:
+            async with ClientSession(read, write, read_timeout_seconds=timedelta(minutes=600), message_handler=message_handler) as session:
                 await session.initialize()
                 
                 # 3. 获取工具列表
