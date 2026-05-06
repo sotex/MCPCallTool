@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MCP 智能控制台</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <style>
+        body { background-color: #f4f7f9; }
+        .sidebar { height: 100vh; border-right: 1px solid #dee2e6; overflow-y: auto; background: #ffffff; }
+        .tool-item { cursor: pointer; border-radius: 8px; transition: all 0.2s; border: 1px solid transparent; }
+        .tool-item:hover { background-color: #f1f3f5; border-color: #dee2e6; }
+        .tool-item.active { background-color: #e7f1ff; border-color: #0d6efd; color: #084298; }
+        .log-area { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 6px; font-family: 'Consolas', monospace; height: 250px; overflow-y: auto; font-size: 0.9rem; }
+        .log-line { border-bottom: 1px solid #333; padding: 2px 0; }
+        .required-star { color: #dc3545; margin-left: 2px; }
+        .json-schema-view { background: #f8f9fa; font-size: 0.85rem; max-height: 150px; overflow: auto; }
+    </style>
+</head>
+<body>
+<div id="app" class="container-fluid">
+    <div class="row">
+        <!-- 左侧工具列表 -->
+        <div class="col-md-3 sidebar p-3 shadow-sm">
+            <h4 class="mb-4 fw-bold text-primary">MCP 控制面板</h4>
+            
+            <div class="card mb-4">
+                <div class="card-body p-2">
+                    <div class="input-group input-group-sm">
+                        <input v-model="newUrl" type="text" class="form-control" placeholder="服务 URL (http-stream)">
+                        <button @click="connectService" class="btn btn-primary">连接</button>
+                    </div>
+                </div>
+            </div>
+            
+            <div v-if="tools.length > 0">
+                <h6 class="text-uppercase text-muted small fw-bold mb-3">可用工具 (<span v-text="tools.length"></span>)</h6>
+                <div v-for="tool in tools" 
+                     :key="tool.name" 
+                     @click="selectTool(tool)"
+                     :class="['p-3 mb-2 tool-item', selectedTool && selectedTool.name === tool.name ? 'active' : '']">
+                    <div class="fw-bold" v-text="tool.name"></div>
+                    <div class="small text-truncate opacity-75" v-text="tool.description"></div>
+                </div>
+            </div>
+            <div v-else class="text-center py-5 text-muted">
+                <small>请先连接 MCP 服务</small>
+            </div>
+        </div>
+
+        <!-- 右侧详情与执行区 -->
+        <div class="col-md-9 p-4">
+            {% raw %}
+            <div v-if="selectedTool">
+                <div class="d-flex justify-content-between align-items-start mb-4">
+                    <div>
+                        <h2 class="fw-bold mb-1" v-text="selectedTool.name"></h2>
+                        <p class="text-muted" v-text="selectedTool.description"></p>
+                    </div>
+                    <span class="badge bg-info text-dark">HTTP-STREAM</span>
+                </div>
+
+                <div class="row">
+                    <!-- 表单列 -->
+                    <div class="col-lg-7">
+                        <div class="card shadow-sm border-0 mb-4">
+                            <div class="card-header bg-white fw-bold">参数输入</div>
+                            <div class="card-body">
+                                <div v-for="(prop, name) in selectedTool.inputSchema.properties" :key="name" class="mb-4">
+                                    <label class="form-label d-flex justify-content-between">
+                                        <span>
+                                            <span class="fw-bold" v-text="name"></span>
+                                            <span v-if="isRequired(name)" class="required-star">*</span>
+                                        </span>
+                                        <span class="badge bg-light text-muted" v-text="prop.type"></span>
+                                    </label>
+                                    
+                                    <!-- 逻辑：根据类型渲染控件 -->
+                                    <select v-if="prop.enum" v-model="payload[name]" class="form-select">
+                                        <option value="" disabled>请选择选项...</option>
+                                        <option v-for="opt in prop.enum" :value="opt" v-text="opt"></option>
+                                    </select>
+
+                                    <div v-else-if="prop.type === 'boolean'" class="form-check form-switch p-0 ms-4">
+                                        <input class="form-check-input" type="checkbox" v-model="payload[name]">
+                                        <label class="form-check-label" v-text="payload[name] ? '启用' : '禁用'"></label>
+                                    </div>
+
+                                    <input v-else-if="prop.type === 'number' || prop.type === 'integer'" 
+                                           type="number" v-model.number="payload[name]" class="form-control">
+
+                                    <textarea v-else-if="prop.type === 'string' && (prop.maxLength > 100)" 
+                                              v-model="payload[name]" class="form-control" rows="3"></textarea>
+
+                                    <input v-else type="text" v-model="payload[name]" class="form-control" 
+                                           :placeholder="prop.description || '输入内容...'">
+                                    
+                                    <div class="form-text mt-1" v-if="prop.description" v-text="prop.description"></div>
+                                </div>
+
+                                <button @click="executeTool" :disabled="isRunning" class="btn btn-success w-100 py-2 fw-bold">
+                                    <span v-if="isRunning" class="spinner-border spinner-border-sm me-2"></span>
+                                    立即执行工具
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- 状态/结果列 -->
+                    <div class="col-lg-5">
+                        <!-- 实时日志 -->
+                        <div class="card shadow-sm border-0 mb-4" v-if="isRunning || progressLogs.length > 0">
+                            <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center">
+                                <span>执行日志</span>
+                                <span v-if="isRunning" class="badge bg-warning text-dark animate-pulse">处理中</span>
+                            </div>
+                            <div class="card-body p-0">
+                                <div class="log-area" id="logBox">
+                                    <div v-for="(log, index) in progressLogs" :key="index" class="log-line">
+                                        <span class="text-info">>></span> {{ typeof log === 'object' ? JSON.stringify(log) : log }}
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <!-- 最终结果 -->
+                        <div v-if="finalResult" class="card shadow-sm border-success border-2">
+                            <div class="card-header bg-success text-white fw-bold">✓ 执行完成</div>
+                            <div class="card-body">
+                                <div v-for="(content, index) in finalResult" :key="index">
+                                    <pre v-if="content.type === 'text'" class="bg-light p-2 rounded"><code>{{ content.text }}</code></pre>
+                                    <img v-if="content.type === 'image'" :src="'data:image/png;base64,' + content.data" class="img-fluid rounded">
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endraw %}
+            
+            <div v-else class="text-center mt-5 py-5 border rounded bg-white shadow-sm">
+                <div class="py-5">
+                    <h3 class="text-muted">准备就绪</h3>
+                    <p class="text-secondary">连接服务后，从左侧选择一个工具进行调用</p>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    const socket = io();
+
+    new Vue({
+        el: '#app',
+        data: {
+            newUrl: '',
+            currentUrl: '',
+            tools: [],
+            selectedTool: null,
+            payload: {},
+            isRunning: false,
+            progressLogs: [],
+            finalResult: null
+        },
+        methods: {
+            connectService() {
+                if (!this.newUrl) return alert("请输入 URL");
+                fetch('/add_service', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ url: this.newUrl })
+                })
+                .then(res => res.json())
+                .then(data => {
+                    if(data.status === 'success') {
+                        this.tools = data.tools;
+                        this.currentUrl = data.url;
+                    } else { alert('错误: ' + data.message); }
+                })
+                .catch(err => alert('网络错误: ' + err));
+            },
+            selectTool(tool) {
+                this.selectedTool = tool;
+                this.finalResult = null;
+                this.progressLogs = [];
+                // 自动根据 Schema 填充初始值
+                const newPayload = {};
+                const props = tool.inputSchema.properties || {};
+                Object.keys(props).forEach(key => {
+                    if (props[key].default !== undefined) {
+                        newPayload[key] = props[key].default;
+                    } else if (props[key].type === 'boolean') {
+                        newPayload[key] = false;
+                    } else {
+                        newPayload[key] = "";
+                    }
+                });
+                this.payload = newPayload;
+            },
+            isRequired(name) {
+                return this.selectedTool.inputSchema.required && 
+                       this.selectedTool.inputSchema.required.includes(name);
+            },
+            executeTool() {
+                this.isRunning = true;
+                this.finalResult = null;
+                this.progressLogs = ["初始化调用请求..."];
+                
+                socket.emit('execute_tool', {
+                    url: this.currentUrl,
+                    tool_name: this.selectedTool.name,
+                    arguments: this.payload
+                });
+            }
+        },
+        mounted() {
+            socket.on('tool_progress', (data) => {
+                this.progressLogs.push(data.data);
+                this.$nextTick(() => {
+                    const box = document.getElementById('logBox');
+                    if (box) box.scrollTop = box.scrollHeight;
+                });
+            });
+
+            socket.on('tool_result', (data) => {
+                this.isRunning = false;
+                this.finalResult = data.content;
+                this.progressLogs.push("执行完成。");
+            });
+
+            socket.on('error', (data) => {
+                this.isRunning = false;
+                alert('MCP 错误: ' + data.message);
+                this.progressLogs.push("错误: " + data.message);
+            });
+        }
+    });
+</script>
+</body>
+</html>
