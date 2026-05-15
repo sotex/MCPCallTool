@@ -4,193 +4,213 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>MCP 智能控制台</title>
-    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
-    <script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script>
+    <!--link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet"-->
+    <link href="bootstrap.min.css" rel="stylesheet">
+    <!--script src="https://cdn.jsdelivr.net/npm/vue@2.6.14/dist/vue.js"></script-->
+    <script src="vue.js"></script>
+    <!--script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.0.1/socket.io.js"></script-->
+    <script src="socket.io.js"></script>
     <style>
         :root { --sidebar-width: 300px; }
         body { background-color: #f4f7f9; display: flex; height: 100vh; overflow: hidden; margin: 0; }
         #app { display: flex; width: 100%; height: 100%; }
         
-        /* 1. 可调宽度的侧边栏 */
-        .sidebar { 
-            min-width: 200px; 
-            max-width: 600px;
-            height: 100vh; 
-            border-right: 1px solid #dee2e6; 
-            background: #ffffff; 
-            display: flex;
-            flex-direction: column;
-            position: relative;
-            flex-shrink: 0;
-        }
-        .resizer {
-            width: 4px;
-            cursor: col-resize;
-            position: absolute;
-            right: 0; top: 0; bottom: 0;
-            z-index: 10;
-            transition: background 0.2s;
-        }
-        .resizer:hover, .resizer:active { background: #0d6efd; }
+        /* 侧边栏与拖拽 */
+        .sidebar { width: var(--sidebar-width); min-width: 250px; height: 100vh; border-right: 1px solid #dee2e6; background: #fff; display: flex; flex-direction: column; position: relative; flex-shrink: 0; }
+        .resizer { width: 4px; cursor: col-resize; position: absolute; right: 0; top: 0; bottom: 0; z-index: 10; transition: background 0.2s; }
+        .resizer:hover { background: #0d6efd; }
 
-        .main-content { flex: 1; height: 100vh; overflow-y: auto; padding: 1.5rem; position: relative; }
+        .main-content { flex: 1; height: 100vh; overflow-y: auto; padding: 1.5rem; }
+        .tool-item { cursor: pointer; border-radius: 8px; border: 1px solid transparent; transition: 0.2s; }
+        .tool-item:hover { background-color: #f1f3f5; }
+        .tool-item.active { background-color: #e7f1ff; border-color: #0d6efd; }
+
+        /* 递归参数组件样式 */
+        .nested-container { border-left: 2px solid #e9ecef; padding-left: 15px; margin-bottom: 12px; margin-top: 5px; }
+        .obj-header { cursor: pointer; display: flex; align-items: center; gap: 8px; user-select: none; padding: 4px 0; }
+        .array-item { border: 1px solid #f1f3f5; background: #fafafa; padding: 12px; border-radius: 8px; margin-bottom: 10px; position: relative; }
+        .btn-remove { position: absolute; right: 8px; top: 8px; z-index: 2; }
+        .desc-tip { cursor: help; border-bottom: 1px dashed #adb5bd; transition: color 0.2s; }
+        .desc-tip:hover { color: #0d6efd; }
         
-        .tool-list { overflow-y: auto; flex: 1; }
-        .tool-item { cursor: pointer; border-radius: 8px; transition: all 0.2s; border: 1px solid transparent; }
-        .tool-item:hover { background-color: #f1f3f5; border-color: #dee2e6; }
-        .tool-item.active { background-color: #e7f1ff; border-color: #0d6efd; color: #084298; }
-        
-        /* 2. 手动调整大小的结果组件 */
-        .result-container {
+        /* 日志区域 */
+        .log-area { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 6px; font-family: 'Consolas', monospace; height: 180px; overflow-y: auto; font-size: 0.85rem; }
+
+        /* 2. 结果显示组件：支持手动调整大小 */
+        .result-resizable-box {
             resize: vertical; 
             overflow: auto;
-            min-height: 150px;
-            background: #ffffff;
+            min-height: 200px;
+            max-height: 80vh;
+            background: #fff;
             border: 1px solid #dee2e6;
             border-top: none;
             border-radius: 0 0 8px 8px;
         }
-        .result-content-wrap { white-space: pre-wrap; word-break: break-all; padding: 15px; font-family: monospace; }
-        .result-content-nowrap { white-space: pre; overflow-x: auto; padding: 15px; font-family: monospace; }
-
-        .log-area { background: #1e1e1e; color: #d4d4d4; padding: 15px; border-radius: 6px; font-family: 'Consolas', monospace; height: 180px; overflow-y: auto; font-size: 0.85rem; }
-        .required-star { color: #dc3545; margin-left: 2px; }
-        
-        /* 3. Tip 样式 */
-        .desc-tip { cursor: help; border-bottom: 1px dashed #999; color: #666; font-size: 0.8rem; }
+        .content-wrap { white-space: pre-wrap; word-break: break-all; font-family: monospace; }
+        .content-nowrap { white-space: pre; overflow-x: auto; font-family: monospace; }
     </style>
 </head>
 <body>
 
 {% raw %}
-<div id="app">
-    <!-- 左侧工具列表 -->
-    <div class="sidebar shadow-sm" :style="{ width: sidebarWidth + 'px' }">
-        <div class="p-3">
-            <h4 class="mb-4 fw-bold text-primary">MCP 控制面板</h4>
-            
-            <div class="input-group input-group-sm mb-3">
-                <input v-model="newUrl" type="text" class="form-control" placeholder="服务 URL (http-stream)">
-                <button @click="connectService" class="btn btn-primary">连接</button>
+<!-- 递归参数输入组件 -->
+<script type="text/x-template" id="mcp-param-template">
+    <div class="mcp-param-node">
+        <!-- OBJECT 类型处理 -->
+        <div v-if="schema.type === 'object'">
+            <div class="obj-header" @click="isCollapsed = !isCollapsed">
+                <span class="small">{{ isCollapsed ? '▶' : '▼' }}</span>
+                <span class="fw-bold text-dark">{{ label }}</span>
+                <span class="badge bg-light text-muted border px-2">Object</span>
             </div>
-
-            <!-- 1. 过滤功能 -->
-            <div class="mb-1">
-                <input v-model="filterQuery" type="text" class="form-control form-control-sm" placeholder="搜索名称或描述...">
-            </div>
-        </div>
-        
-        <div class="tool-list p-3 pt-0">
-            <div v-if="filteredTools.length > 0">
-                <h6 class="text-uppercase text-muted small fw-bold mb-3">可用工具 ({{filteredTools.length}})</h6>
-                <div v-for="tool in filteredTools" 
-                     :key="tool.name" 
-                     @click="selectTool(tool)"
-                     :class="['p-3 mb-2 tool-item', selectedTool && selectedTool.name === tool.name ? 'active' : '']">
-                    <div class="fw-bold">{{ tool.name }}</div>
-                    <div class="small text-truncate opacity-75">{{ tool.description }}</div>
+            <div v-show="!isCollapsed" class="nested-container">
+                <div v-for="(subSchema, subName) in schema.properties" :key="subName">
+                    <mcp-parameter-input 
+                        :label="subName" 
+                        :schema="subSchema" 
+                        :value="value[subName]"
+                        @input="$set(value, subName, $event)"
+                    ></mcp-parameter-input>
                 </div>
             </div>
-            <div v-else class="text-center py-5 text-muted">
-                <small v-if="tools.length > 0">未找到匹配项</small>
-                <small v-else>请先连接 MCP 服务</small>
+        </div>
+
+        <!-- ARRAY 类型处理 -->
+        <div v-else-if="schema.type === 'array'">
+            <div class="d-flex justify-content-between align-items-center mb-1">
+                <span class="fw-bold text-dark">{{ label }} <span class="badge bg-light text-muted border ms-1">Array</span></span>
+                <button class="btn btn-sm btn-outline-primary py-0 px-2" style="font-size: 0.75rem" @click="addItem">+ 添加</button>
+            </div>
+            <div class="nested-container">
+                <div v-for="(item, index) in value" :key="index" class="array-item shadow-sm">
+                    <button class="btn btn-link text-danger btn-remove p-0" @click="removeItem(index)">删除</button>
+                    <mcp-parameter-input 
+                        :label="'#' + (index + 1)" 
+                        :schema="schema.items" 
+                        :value="value[index]"
+                        @input="$set(value, index, $event)"
+                    ></mcp-parameter-input>
+                </div>
+                <div v-if="value.length === 0" class="text-muted small ps-2">列表为空</div>
             </div>
         </div>
 
-        <!-- 4. 侧边栏拖拽条 -->
+        <!-- 基础类型 (string, number, boolean) -->
+        <div v-else class="mb-3 ps-1">
+            <label class="form-label d-flex align-items-center mb-1">
+                <span class="fw-bold small me-2">{{ label }}</span>
+                <!-- 2. 参数描述 Tip 逻辑 -->
+                <span v-if="schema.description" 
+                      class="desc-tip small text-muted" 
+                      :title="schema.description">
+                    {{ truncateDesc(schema.description) }}
+                </span>
+            </label>
+            
+            <!-- 修复点 1：枚举值类型转换处理 -->
+            <select v-if="schema.enum" 
+                    :value="value" 
+                    @change="handleEnumChange($event.target.value)" 
+                    class="form-select form-select-sm">
+                <!-- 增加一个空选项处理无默认值的情况 -->
+                <option v-if="value === '' || value === undefined" value="" disabled>请选择...</option>
+                <option v-for="opt in schema.enum" :value="opt">{{ opt }}</option>
+            </select>
+
+            <div v-else-if="schema.type === 'boolean'" class="form-check form-switch">
+                <input class="form-check-input" type="checkbox" :checked="value" @change="$emit('input', $event.target.checked)">
+            </div>
+
+            <input v-else-if="schema.type === 'number' || schema.type === 'integer'" 
+                   type="number" :value="value" @input="$emit('input', Number($event.target.value))" class="form-control form-control-sm">
+
+            <textarea v-else-if="schema.type === 'string' && (schema.maxLength > 100 || label.includes('content'))" 
+                      :value="value" @input="$emit('input', $event.target.value)" class="form-control form-control-sm" rows="3"></textarea>
+
+            <input v-else type="text" :value="value" @input="$emit('input', $event.target.value)" class="form-control form-control-sm">
+        </div>
+    </div>
+</script>
+
+<div id="app">
+    <!-- 左侧侧边栏 -->
+    <div class="sidebar shadow-sm" :style="{ width: sidebarWidth + 'px' }">
+        <div class="p-3 border-bottom bg-light">
+            <h5 class="fw-bold text-primary mb-3">MCP 控制面板</h5>
+            <div class="input-group input-group-sm mb-2">
+                <input v-model="newUrl" type="text" class="form-control" placeholder="MCP 服务 URL">
+                <button @click="connectService" class="btn btn-primary">连接</button>
+            </div>
+            <input v-model="filterQuery" type="text" class="form-control form-control-sm" placeholder="过滤工具...">
+        </div>
+        
+        <div class="tool-list p-2 overflow-auto">
+            <div v-for="tool in filteredTools" :key="tool.name" @click="selectTool(tool)"
+                 :class="['p-3 mb-2 tool-item border', selectedTool && selectedTool.name === tool.name ? 'active shadow-sm' : '']">
+                <div class="fw-bold small">{{ tool.name }}</div>
+                <div class="text-muted text-truncate small">{{ tool.description }}</div>
+            </div>
+        </div>
         <div class="resizer" @mousedown="initResize"></div>
     </div>
 
-    <!-- 右侧详情与执行区 -->
+    <!-- 主操作区 -->
     <div class="main-content">
-        <div v-if="selectedTool">
-            <div class="d-flex justify-content-between align-items-start mb-4">
-                <div>
-                    <h2 class="fw-bold mb-1">{{ selectedTool.name }}</h2>
-                    <p class="text-muted">{{ selectedTool.description }}</p>
-                </div>
-                <span class="badge bg-secondary">v1.0</span>
-            </div>
-
+        <div v-if="selectedTool" class="container-fluid">
             <div class="row">
-                <!-- 参数输入 -->
-                <div class="col-lg-7">
-                    <div class="card shadow-sm border-0 mb-4">
-                        <div class="card-header bg-white fw-bold border-bottom-0 pt-3">参数配置</div>
-                        <div class="card-body">
-                            <div v-for="(prop, name) in selectedTool.inputSchema.properties" :key="name" class="mb-4">
-                                <label class="form-label d-flex justify-content-between align-items-center">
-                                    <span>
-                                        <span class="fw-bold">{{ name }}</span>
-                                        <span v-if="isRequired(name)" class="required-star">*</span>
-                                        
-                                        <!-- 3. 参数描述截断与 Tip -->
-                                        <span v-if="prop.description" 
-                                              class="ms-2 desc-tip" 
-                                              :title="prop.description">
-                                            ({{ truncateDesc(prop.description) }})
-                                        </span>
-                                    </span>
-                                    <span class="badge bg-light text-muted small border">{{ prop.type }}</span>
-                                </label>
-                                
-                                <select v-if="prop.enum" v-model="payload[name]" class="form-select">
-                                    <option v-for="opt in prop.enum" :value="opt">{{ opt }}</option>
-                                </select>
+                <!-- 左列：参数 -->
+                <div class="col-md-7">
+                    <div class="card shadow-sm mb-4">
+                        <div class="card-header bg-white py-3 border-bottom-0">
+                            <h5 class="mb-0 fw-bold text-dark">{{ selectedTool.name }}</h5>
+                            <p class="text-muted small mb-0">{{ selectedTool.description }}</p>
+                        </div>
+                        <div class="card-body pt-0">
+                            <hr class="mt-0">
+                            <mcp-parameter-input 
+                                label="输入参数" 
+                                :schema="selectedTool.inputSchema" 
+                                :value="payload"
+                                @input="payload = $event"
+                            ></mcp-parameter-input>
 
-                                <div v-else-if="prop.type === 'boolean'" class="form-check form-switch ms-1">
-                                    <input class="form-check-input" type="checkbox" v-model="payload[name]">
-                                    <label class="form-check-label text-muted">{{ payload[name] ? 'True' : 'False' }}</label>
-                                </div>
-
-                                <input v-else-if="prop.type === 'number' || prop.type === 'integer'" 
-                                       type="number" v-model.number="payload[name]" class="form-control">
-
-                                <textarea v-else-if="prop.type === 'string' && (prop.maxLength > 100 || name.includes('content'))" 
-                                          v-model="payload[name]" class="form-control" rows="3"></textarea>
-
-                                <input v-else type="text" v-model="payload[name]" class="form-control">
-                            </div>
-
-                            <button @click="executeTool" :disabled="isRunning" class="btn btn-primary w-100 py-2 fw-bold shadow-sm">
+                            <button @click="executeTool" :disabled="isRunning" class="btn btn-primary w-100 mt-4 py-2 shadow">
                                 <span v-if="isRunning" class="spinner-border spinner-border-sm me-2"></span>
-                                {{ isRunning ? '正在执行...' : '立即执行工具' }}
+                                {{ isRunning ? '正在处理数据...' : '执行工具' }}
                             </button>
                         </div>
                     </div>
                 </div>
 
-                <!-- 状态与结果 -->
-                <div class="col-lg-5">
-                    <div class="card shadow-sm border-0 mb-4">
-                        <div class="card-header bg-dark text-white py-2 small">实时日志</div>
+                <!-- 右列：日志与结果 -->
+                <div class="col-md-5">
+                    <div class="card shadow-sm mb-4 bg-dark border-0">
+                        <div class="card-header text-white-50 small border-bottom border-secondary py-2">执行状态</div>
                         <div class="log-area" id="logBox">
-                            <div v-for="(log, index) in progressLogs" :key="index" class="mb-1">
-                                <span class="text-secondary">[{{ index + 1 }}]</span> {{ log }}
+                            <div v-for="(log, idx) in progressLogs" :key="idx" class="mb-1">
+                                <span class="text-info">#</span> {{ log }}
                             </div>
                         </div>
                     </div>
 
-                    <!-- 2. 返回结果组件 (可调大小 & 自动换行) -->
-                    <div v-if="finalResult" class="card shadow-sm border-0 border-top border-success border-4">
-                        <div class="card-header bg-white d-flex justify-content-between align-items-center">
-                            <span class="fw-bold text-success">执行结果</span>
+                    <!-- 1. 结果组件：支持换行切换与手动拉伸 -->
+                    <div v-if="finalResult" class="card shadow-sm border-top border-success border-4">
+                        <div class="card-header bg-white d-flex justify-content-between align-items-center py-2">
+                            <span class="fw-bold text-success">返回结果</span>
                             <div class="form-check form-switch m-0">
                                 <input class="form-check-input" type="checkbox" v-model="isAutoWrap" id="wrapSwitch">
                                 <label class="form-check-label small" for="wrapSwitch">自动换行</label>
                             </div>
                         </div>
-                        <div class="result-container">
-                            <div :class="isAutoWrap ? 'result-content-wrap' : 'result-content-nowrap'">
-                                <div v-for="(content, index) in finalResult" :key="index" class="mb-3">
+                        <div class="result-resizable-box">
+                            <div :class="isAutoWrap ? 'content-wrap p-3' : 'content-nowrap p-3'">
+                                <div v-for="(content, cIdx) in finalResult" :key="cIdx" class="mb-3">
                                     <template v-if="content.type === 'text'">
-                                        <div class="text-muted small mb-1">Text Content:</div>
-                                        <div class="p-2 bg-light border rounded">{{ content.text }}</div>
+                                        <div class="bg-light p-3 border rounded border-start-0 border-end-0 border-bottom-0">{{ content.text }}</div>
                                     </template>
                                     <template v-if="content.type === 'image'">
-                                        <div class="text-muted small mb-1">Image Result:</div>
-                                        <img :src="'data:image/png;base64,' + content.data" class="img-fluid rounded shadow-sm">
+                                        <img :src="'data:image/png;base64,' + content.data" class="img-fluid rounded border shadow-sm">
                                     </template>
                                 </div>
                             </div>
@@ -199,104 +219,136 @@
                 </div>
             </div>
         </div>
-        
-        <div v-else class="h-100 d-flex align-items-center justify-content-center text-center">
-            <div class="opacity-50">
-                <h3 class="text-muted">等待连接</h3>
-                <p>从左侧面板连接并选择一个工具</p>
-            </div>
+        <!-- 空状态 -->
+        <div v-else class="h-100 d-flex flex-column align-items-center justify-content-center text-muted">
+            <h4 class="fw-light">未选择工具</h4>
+            <p>请从左侧列表中点击一个 MCP 工具开始</p>
         </div>
     </div>
 </div>
 {% endraw %}
 
 <script>
-    const socket = io();
+    // 注册递归参数组件
+    Vue.component('mcp-parameter-input', {
+        template: '#mcp-param-template',
+        props: ['label', 'schema', 'value'],
+        data() {
+            return { isCollapsed: false };
+        },
+        methods: {
+            // 修复点 1：根据 Schema 类型处理枚举值转换
+            handleEnumChange(val) {
+                let converted = val;
+                if (this.schema.type === 'number' || this.schema.type === 'integer') {
+                    converted = Number(val);
+                } else if (this.schema.type === 'boolean') {
+                    converted = val === 'true';
+                }
+                this.$emit('input', converted);
+            },
+            // 2. 描述文本截断逻辑
+            truncateDesc(text) {
+                if (!text) return '';
+                return text.length > 64 ? ' (' + text.substring(0, 64) + '...)' : ' (' + text + ')';
+            },
+            addItem() {
+                const itemSchema = this.schema.items;
+                const newValue = this.getDefaultValue(itemSchema);
+                const currentArray = Array.isArray(this.value) ? [...this.value] : [];
+                currentArray.push(newValue);
+                this.$emit('input', currentArray);
+            },
+            removeItem(index) {
+                const currentArray = [...this.value];
+                currentArray.splice(index, 1);
+                this.$emit('input', currentArray);
+            },
+            // 修复点 2：增强默认值处理逻辑
+            getDefaultValue(schema) {
+                // 1. 优先使用显式定义的 default
+                if (schema.default !== undefined) return JSON.parse(JSON.stringify(schema.default));
+                
+                // 2. 如果是枚举，且没有默认值，通常选第一个（符合大部分 UI 习惯）
+                if (schema.enum && schema.enum.length > 0) return schema.enum[0];
 
+                // 3. 根据类型降级处理
+                if (schema.type === 'object') {
+                    const obj = {};
+                    if(schema.properties) {
+                        Object.keys(schema.properties).forEach(k => {
+                            obj[k] = this.getDefaultValue(schema.properties[k]);
+                        });
+                    }
+                    return obj;
+                }
+                if (schema.type === 'array') return [];
+                if (schema.type === 'boolean') return false;
+                if (schema.type === 'number' || schema.type === 'integer') return 0;
+                return "";
+            }
+        }
+    });
+
+    const socket = io();
     new Vue({
         el: '#app',
         data: {
-            newUrl: '',
-            currentUrl: '',
-            tools: [],
-            filterQuery: '',
-            selectedTool: null,
-            payload: {},
-            isRunning: false,
-            progressLogs: [],
-            finalResult: null,
-            isAutoWrap: true,
-            sidebarWidth: 300 
+            newUrl: 'http://127.8.9.10:29188/mcp', currentUrl: '', tools: [], filterQuery: '',
+            selectedTool: null, payload: {}, isRunning: false,
+            progressLogs: [], finalResult: null, sidebarWidth: 300,
+            isAutoWrap: true // 1. 自动换行控制
         },
         computed: {
             filteredTools() {
-                const q = this.filterQuery.toLowerCase();
-                return this.tools.filter(t => 
-                    t.name.toLowerCase().includes(q) || 
-                    (t.description && t.description.toLowerCase().includes(q))
-                );
+                return this.tools.filter(t => t.name.toLowerCase().includes(this.filterQuery.toLowerCase()));
             }
         },
         methods: {
-            truncateDesc(text) {
-                if (!text) return '';
-                return text.length > 64 ? text.substring(0, 64) + '...' : text;
-            },
             initResize(e) {
-                e.preventDefault();
-                document.addEventListener('mousemove', this.startResizing);
-                document.addEventListener('mouseup', this.stopResizing);
+                document.addEventListener('mousemove', this.doResize);
+                document.addEventListener('mouseup', () => document.removeEventListener('mousemove', this.doResize));
             },
-            startResizing(e) {
-                if (e.clientX >= 200 && e.clientX <= 600) {
-                    this.sidebarWidth = e.clientX;
-                }
-            },
-            stopResizing() {
-                document.removeEventListener('mousemove', this.startResizing);
-                document.removeEventListener('mouseup', this.stopResizing);
-            },
+            doResize(e) { this.sidebarWidth = Math.max(250, Math.min(600, e.clientX)); },
             connectService() {
-                if(!this.newUrl) return alert("请输入URL");
                 fetch('/add_service', {
                     method: 'POST',
                     headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ url: this.newUrl.trim() })
-                })
-                .then(res => res.json())
-                .then(data => {
-                    if(data.status === 'success') {
-                        this.tools = data.tools;
-                        this.currentUrl = data.url;
-                    } else { alert('错误: ' + data.message); }
-                })
-                .catch(err => alert('请求失败: ' + err));
+                    body: JSON.stringify({ url: this.newUrl })
+                }).then(res => res.json()).then(data => {
+                    if(data.status === 'success') { this.tools = data.tools; this.currentUrl = data.url; }
+                    else { alert(data.message); }
+                });
             },
             selectTool(tool) {
                 this.selectedTool = tool;
                 this.finalResult = null;
                 this.progressLogs = [];
-                const newPayload = {};
-                const props = tool.inputSchema.properties || {};
-                Object.keys(props).forEach(key => {
-                    if (props[key].default !== undefined) {
-                        newPayload[key] = props[key].default;
-                    } else if (props[key].type === 'boolean') {
-                        newPayload[key] = false;
-                    } else {
-                        newPayload[key] = "";
-                    }
-                });
-                this.payload = newPayload;
+                this.payload = this.initPayload(tool.inputSchema);
             },
-            isRequired(name) {
-                return this.selectedTool.inputSchema.required && 
-                       this.selectedTool.inputSchema.required.includes(name);
+            initPayload(schema) {
+                // 直接借用组件内部的逻辑来保持一致性
+                // 这里的 this.$options.components 是为了在根组件里调用子组件逻辑的 Hack 方式
+                // 或者我们直接提取 getDefaultValue 为全局函数。这里为了简洁直接复写逻辑：
+                if (schema.default !== undefined) return JSON.parse(JSON.stringify(schema.default));
+                if (schema.enum && schema.enum.length > 0) return schema.enum[0];
+
+                if (schema.type === 'object') {
+                    const res = {};
+                    Object.keys(schema.properties || {}).forEach(k => {
+                        res[k] = this.initPayload(schema.properties[k]);
+                    });
+                    return res;
+                }
+                if (schema.type === 'array') return [];
+                if (schema.type === 'boolean') return false;
+                if (schema.type === 'number' || schema.type === 'integer') return 0;
+                return schema.default !== undefined ? schema.default : "";
             },
             executeTool() {
                 this.isRunning = true;
                 this.finalResult = null;
-                this.progressLogs = ["准备发送指令..."];
+                this.progressLogs = ["正在向服务器请求指令...", "请求参数：", this.payload];
                 socket.emit('execute_tool', {
                     url: this.currentUrl,
                     tool_name: this.selectedTool.name,
@@ -312,15 +364,15 @@
                     if(b) b.scrollTop = b.scrollHeight;
                 });
             });
-            socket.on('tool_result', (data) => {
-                this.isRunning = false;
-                this.finalResult = data.content;
-                this.progressLogs.push("执行完成。");
+            socket.on('tool_result', (data) => { 
+                this.isRunning = false; 
+                this.finalResult = data.content; 
+                this.progressLogs.push("执行成功。");
             });
-            socket.on('error', (data) => {
-                this.isRunning = false;
-                this.progressLogs.push("异常: " + data.message);
-                alert('MCP 错误: ' + data.message);
+            socket.on('error', (data) => { 
+                this.isRunning = false; 
+                this.progressLogs.push("致命错误: " + data.message);
+                alert(data.message); 
             });
         }
     });
